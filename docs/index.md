@@ -20,9 +20,35 @@ Note: to get the latest pre-release build, add ` -Pre` to the end of the command
 
 ## Release  Notes
 
+### 2.0.4
+
+Primary changes:
+
+- remove the System.Data.SqlClient dependency, allowing consumers to use System.Data.SqlClient or Microsoft.Data.SqlClient (or neither, or both) as they choose
+ - this means that some users may need to *re-add* one of the above as a `<PackageReference>` for their project to build, if they were previously relying on Dapper to provide System.Data.SqlClient
+ - the `AsTableValuedParameter(this IEnumerable<SqlDataRecord>)` extension method is now `AsTableValuedParameter<T>(this IEnumerable<T>) where T : IDataRecord`; this is a breaking change but should be code-compatible and just requires a rebuild
+- unify the target platform at NetStandard2.0 (and .NET Framework 4.6.2 for the EF DB geometry/geography types)
+- fix bug with `Identity` not enforcing type identity of multi-mapped types
+
+Other changes merged:
+
+- fix #1242, #1280, #1282 - fix value-tuple mapping
+- fix #1295 - add `ExecuteReaderAsync` overload to expose `DbDataReader`
+- fix #569 - handing of `IN` and similar clauses in some scenarios
+- fix #1256 - make `Dispose()` polymorphic in "rainbow"
+- fix #1257 - make the `.Connection` available in "rainbow"
+
+### 1.60.6
+
+- improve performance of descriptor API
+
+### 1.60.5
+
+- add descriptor API to `DapperRow` (enables UI binding with non-generic `Query()` API)
+
 ### 1.60.1
 
-- Fix [#1196](https://github.com/StackExchange/Dapper/issues/1196) - versioning fix only ([#1198](https://github.com/StackExchange/Dapper/pull/1198)) - assembly version is now locked at 1.60.0 to resolve some mismatch issues with .NET Core assebly loading/binding.
+- Fix [#1196](https://github.com/StackExchange/Dapper/issues/1196) - versioning fix only ([#1198](https://github.com/StackExchange/Dapper/pull/1198)) - assembly version is now locked at 1.60.0 to resolve some mismatch issues with .NET Core assembly loading/binding.
 
 ### 1.50.7
 
