@@ -7,6 +7,12 @@ using Xunit;
 
 namespace Dapper.Tests
 {
+    /// <summary>
+    /// If Docker Desktop is installed, run the following command to start a container suitable for the tests.
+    /// <code>
+    /// docker run -d -p 3306:3306 --name Dapper.Tests.MySQL -e MYSQL_DATABASE=tests -e MYSQL_USER=test -e MYSQL_PASSWORD=pass -e MYSQL_ROOT_PASSWORD=pass mysql
+    /// </code>
+    /// </summary>
     public sealed class MySqlProvider : DatabaseProvider
     {
         public override DbProviderFactory Factory => MySqlConnector.MySqlConnectorFactory.Instance;
@@ -38,7 +44,7 @@ namespace Dapper.Tests
             }
         }
 
-        [FactMySql(Skip = "See https://github.com/DapperLib/Dapper/issues/552, not resolved on the MySQL end.")]
+        [FactMySql]
         public void Issue552_SignedUnsignedBooleans()
         {
             using (var conn = Provider.GetMySqlConnection(true, false, false))

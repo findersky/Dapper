@@ -5,6 +5,7 @@ using System.Data;
 using System.Data.Common;
 using System.Globalization;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -529,7 +530,7 @@ namespace Dapper
             }
         }
 
-        private struct AsyncExecState
+        private readonly struct AsyncExecState
         {
             public readonly DbCommand Command;
             public readonly Task<int> Task;
@@ -967,7 +968,7 @@ namespace Dapper
             }
         }
 
-        private static IEnumerable<T> ExecuteReaderSync<T>(IDataReader reader, Func<IDataReader, object> func, object parameters)
+        private static IEnumerable<T> ExecuteReaderSync<T>(DbDataReader reader, Func<DbDataReader, object> func, object parameters)
         {
             using (reader)
             {
@@ -1004,7 +1005,7 @@ namespace Dapper
             CacheInfo info = GetCacheInfo(identity, param, command.AddToCache);
 
             DbCommand cmd = null;
-            IDataReader reader = null;
+            DbDataReader reader = null;
             bool wasClosed = cnn.State == ConnectionState.Closed;
             try
             {
@@ -1135,7 +1136,7 @@ namespace Dapper
                 var reader = await ExecuteReaderWithFlagsFallbackAsync(cmd, wasClosed, commandBehavior, command.CancellationToken).ConfigureAwait(false);
                 wasClosed = false;
                 disposeCommand = false;
-                return WrappedReader.Create(cmd, reader);
+                return DbWrappedReader.Create(cmd, reader);
             }
             finally
             {
@@ -1217,5 +1218,97 @@ namespace Dapper
             }
             return Parse<T>(result);
         }
+
+#if NET5_0_OR_GREATER
+        /// <summary>
+        /// Execute a query asynchronously using <see cref="IAsyncEnumerable{dynamic}"/>.
+        /// </summary>
+        /// <param name="cnn">The connection to query on.</param>
+        /// <param name="sql">The SQL to execute for the query.</param>
+        /// <param name="param">The parameters to pass, if any.</param>
+        /// <param name="transaction">The transaction to use, if any.</param>
+        /// <param name="commandTimeout">The command timeout (in seconds).</param>
+        /// <param name="commandType">The type of command to execute.</param>
+        /// <returns>
+        /// A sequence of data of dynamic data
+        /// </returns>
+        public static IAsyncEnumerable<dynamic> QueryUnbufferedAsync(this DbConnection cnn, string sql, object param = null, DbTransaction transaction = null, int? commandTimeout = null, CommandType? commandType = null)
+        {
+            // note: in many cases of adding a new async method I might add a CancellationToken - however, cancellation is expressed via WithCancellation on iterators
+            return QueryUnbufferedAsync<dynamic>(cnn, typeof(object), new CommandDefinition(sql, param, transaction, commandTimeout, commandType, CommandFlags.None, default));
+        }
+
+        /// <summary>
+        /// Execute a query asynchronously using <see cref="IAsyncEnumerable{T}"/>.
+        /// </summary>
+        /// <typeparam name="T">The type of results to return.</typeparam>
+        /// <param name="cnn">The connection to query on.</param>
+        /// <param name="sql">The SQL to execute for the query.</param>
+        /// <param name="param">The parameters to pass, if any.</param>
+        /// <param name="transaction">The transaction to use, if any.</param>
+        /// <param name="commandTimeout">The command timeout (in seconds).</param>
+        /// <param name="commandType">The type of command to execute.</param>
+        /// <returns>
+        /// A sequence of data of <typeparamref name="T"/>; if a basic type (int, string, etc) is queried then the data from the first column is assumed, otherwise an instance is
+        /// created per row, and a direct column-name===member-name mapping is assumed (case insensitive).
+        /// </returns>
+        public static IAsyncEnumerable<T> QueryUnbufferedAsync<T>(this DbConnection cnn, string sql, object param = null, DbTransaction transaction = null, int? commandTimeout = null, CommandType? commandType = null)
+        {
+            // note: in many cases of adding a new async method I might add a CancellationToken - however, cancellation is expressed via WithCancellation on iterators
+            return QueryUnbufferedAsync<T>(cnn, typeof(T), new CommandDefinition(sql, param, transaction, commandTimeout, commandType, CommandFlags.None, default));
+        }
+
+        private static IAsyncEnumerable<T> QueryUnbufferedAsync<T>(this IDbConnection cnn, Type effectiveType, CommandDefinition command)
+        {
+            return Impl(cnn, effectiveType, command, command.CancellationToken); // proxy to allow CT expression
+
+            static async IAsyncEnumerable<T> Impl(IDbConnection cnn, Type effectiveType, CommandDefinition command,
+                [EnumeratorCancellation] CancellationToken cancel)
+            {
+                object param = command.Parameters;
+                var identity = new Identity(command.CommandText, command.CommandType, cnn, effectiveType, param?.GetType());
+                var info = GetCacheInfo(identity, param, command.AddToCache);
+                bool wasClosed = cnn.State == ConnectionState.Closed;
+                using var cmd = command.TrySetupAsyncCommand(cnn, info.ParamReader);
+                DbDataReader reader = null;
+                try
+                {
+                    if (wasClosed) await cnn.TryOpenAsync(cancel).ConfigureAwait(false);
+                    reader = await ExecuteReaderWithFlagsFallbackAsync(cmd, wasClosed, CommandBehavior.SequentialAccess | CommandBehavior.SingleResult, cancel).ConfigureAwait(false);
+
+                    var tuple = info.Deserializer;
+                    int hash = GetColumnHash(reader);
+                    if (tuple.Func == null || tuple.Hash != hash)
+                    {
+                        if (reader.FieldCount == 0)
+                        {
+                            yield break;
+                        }
+                        tuple = info.Deserializer = new DeserializerState(hash, GetDeserializer(effectiveType, reader, 0, -1, false));
+                        if (command.AddToCache) SetQueryCache(identity, info);
+                    }
+
+                    var func = tuple.Func;
+
+                    var convertToType = Nullable.GetUnderlyingType(effectiveType) ?? effectiveType;
+                    while (await reader.ReadAsync(cancel).ConfigureAwait(false))
+                    {
+                        object val = func(reader);
+                        yield return GetValue<T>(reader, effectiveType, val);
+                    }
+                    while (await reader.NextResultAsync(cancel).ConfigureAwait(false)) { /* ignore subsequent result sets */ }
+                    command.OnCompleted();
+                }
+                finally
+                {
+                    if (reader is not null)
+                    {
+                        await reader.DisposeAsync();
+                    }
+                    if (wasClosed) cnn.Close();
+                }
+            }
+        }
+#endif
     }
 }
