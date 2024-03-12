@@ -48,10 +48,15 @@ namespace Dapper
         /// </summary>
         public int? CommandTimeout { get; }
 
+        internal readonly CommandType CommandTypeDirect;
+
         /// <summary>
         /// The type of command that the command-text represents
         /// </summary>
-        public CommandType? CommandType { get; }
+#if DEBUG // prevent use in our own code
+        [Obsolete("Prefer " + nameof(CommandTypeDirect), true)]
+#endif
+        public CommandType? CommandType => CommandTypeDirect;
 
         /// <summary>
         /// Should data be buffered before returning?
@@ -92,9 +97,20 @@ namespace Dapper
             Parameters = parameters;
             Transaction = transaction;
             CommandTimeout = commandTimeout;
-            CommandType = commandType;
+            CommandTypeDirect = commandType ?? InferCommandType(commandText);
             Flags = flags;
             CancellationToken = cancellationToken;
+        }
+
+        internal static CommandType InferCommandType(string sql)
+        {
+            // if the sql contains any whitespace character (space/tab/cr/lf/etc - via unicode),
+            // has operators, comments, semi-colon, or a known exception: interpret as ad-hoc;
+            // otherwise, simple names like "SomeName" should be treated as a stored-proc
+            // (note TableDirect would need to be specified explicitly, but in reality providers don't usually support TableDirect anyway)
+
+            if (sql is null || CompiledRegex.WhitespaceOrReserved.IsMatch(sql)) return System.Data.CommandType.Text;
+            return System.Data.CommandType.StoredProcedure;
         }
 
         private CommandDefinition(object? parameters) : this()
@@ -124,8 +140,7 @@ namespace Dapper
             {
                 cmd.CommandTimeout = SqlMapper.Settings.CommandTimeout.Value;
             }
-            if (CommandType.HasValue)
-                cmd.CommandType = CommandType.Value;
+            cmd.CommandType = CommandTypeDirect;
             paramReader?.Invoke(cmd, Parameters);
             return cmd;
         }
